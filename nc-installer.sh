@@ -38,15 +38,21 @@ validate_name() {
 check_database() {
   local db_name=$1
   if mysql -u root -p$DB_PASS -e "USE $db_name" 2>/dev/null; then
-    echo "Database '$db_name' already exists. Do you want to use and reset it? (yes/no)"
-    read -r reset_db
-    if [ "$reset_db" = "yes" ]; then
-      mysql -u root -p$DB_PASS -e "DROP DATABASE $db_name; CREATE DATABASE $db_name;"
-      echo "Database '$db_name' has been reset."
-    else
-      echo "Please choose a different database name."
-      return 1
-    fi
+    echo "Database '$db_name' already exists. Do you want to use it? (yes/no/reset)"
+    read -r choice
+    case "$choice" in
+      yes)
+        echo "Using the existing database '$db_name'."
+        ;;
+      reset)
+        echo "Resetting the database '$db_name'."
+        mysql -u root -p$DB_PASS -e "DROP DATABASE $db_name; CREATE DATABASE $db_name;"
+        ;;
+      *)
+        echo "Please choose a different database name."
+        return 1
+        ;;
+    esac
   fi
   return 0
 }
@@ -122,8 +128,8 @@ EOF
 # Create a database and user for Nextcloud
 echo "Setting up Nextcloud database and user..."
 sudo mysql -u root -p$DB_PASS <<EOF
-CREATE DATABASE $DB_NAME;
-CREATE USER '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASS';
+CREATE DATABASE IF NOT EXISTS $DB_NAME;
+CREATE USER IF NOT EXISTS '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASS';
 GRANT ALL PRIVILEGES ON $DB_NAME.* TO '$DB_USER'@'localhost';
 FLUSH PRIVILEGES;
 EOF
@@ -185,3 +191,4 @@ sudo systemctl restart apache2
 
 # Success message
 echo "Nextcloud installation completed! Visit http://$DOMAIN to finish the setup."
+
