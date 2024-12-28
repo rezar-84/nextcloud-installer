@@ -44,6 +44,13 @@ validate_domain() {
   [[ "$input" =~ ^[A-Za-z0-9.-]+$ ]]
 }
 
+# Validation function for directory paths
+validate_directory_path() {
+  local input="$1"
+  # Ensure the input is a valid absolute path
+  [[ "$input" =~ ^/([A-Za-z0-9._-]+/)*[A-Za-z0-9._-]*$ ]]
+}
+
 ###############################################################################
 # Generic prompt function
 ###############################################################################
@@ -112,7 +119,7 @@ fi
 # 2. Prompt the user for all required variables
 #    - Order is important. We need the DB root password before checking databases.
 prompt_variable DB_PASS        "Enter the **MariaDB root password**"    "root_password"  validate_password
-prompt_variable NEXTCLOUD_DIR  "Enter the directory to install Nextcloud" "/var/www/nextcloud" validate_mysql_identifier
+prompt_variable NEXTCLOUD_DIR  "Enter the directory to install Nextcloud" "/var/www/nextcloud" validate_directory_path
 prompt_variable DB_NAME        "Enter the database name for Nextcloud"    "nextcloud_db"   validate_mysql_identifier
 prompt_variable DB_USER        "Enter the database user for Nextcloud"    "nextcloud_user" validate_mysql_identifier
 prompt_variable ADMIN_USER     "Enter the Nextcloud admin username"       "admin"          validate_mysql_identifier
