@@ -24,6 +24,33 @@ prompt_variable() {
   fi
 }
 
+# Function to validate database names and usernames
+validate_name() {
+  local name=$1
+  if ! [[ $name =~ ^[a-zA-Z0-9_]+$ ]]; then
+    echo "Invalid name '$name'. Only alphanumeric characters and underscores are allowed."
+    return 1
+  fi
+  return 0
+}
+
+# Function to check if database exists
+check_database() {
+  local db_name=$1
+  if mysql -u root -p$DB_PASS -e "USE $db_name" 2>/dev/null; then
+    echo "Database '$db_name' already exists. Do you want to use and reset it? (yes/no)"
+    read -r reset_db
+    if [ "$reset_db" = "yes" ]; then
+      mysql -u root -p$DB_PASS -e "DROP DATABASE $db_name; CREATE DATABASE $db_name;"
+      echo "Database '$db_name' has been reset."
+    else
+      echo "Please choose a different database name."
+      return 1
+    fi
+  fi
+  return 0
+}
+
 # Retry mechanism
 retry_installation() {
   echo "Installation failed. Would you like to retry with the same variables? (yes/no)"
@@ -41,11 +68,28 @@ trap retry_installation ERR
 # Prompt for variables
 prompt_variable NEXTCLOUD_DIR "Enter the directory where Nextcloud will be installed" "/var/www/nextcloud"
 prompt_variable DB_NAME "Enter the database name for Nextcloud" "nextcloud_db"
+validate_name $DB_NAME || exit 1
+check_database $DB_NAME || exit 1
+
 prompt_variable DB_USER "Enter the database user for Nextcloud" "nextcloud_user"
+validate_name $DB_USER || exit 1
 prompt_variable DB_PASS "Enter the database password for Nextcloud" "secure_password"
 prompt_variable ADMIN_USER "Enter the admin username for Nextcloud" "admin"
 prompt_variable ADMIN_PASS "Enter the admin password for Nextcloud" "admin_password"
 prompt_variable DOMAIN "Enter the domain for Nextcloud" "example.com"
+
+# Check if Nextcloud directory exists
+if [ -d "$NEXTCLOUD_DIR" ]; then
+  echo "The directory '$NEXTCLOUD_DIR' already exists. Do you want to remove it? (yes/no)"
+  read -r remove_dir
+  if [ "$remove_dir" = "yes" ]; then
+    sudo rm -rf "$NEXTCLOUD_DIR"
+    echo "Removed existing Nextcloud directory."
+  else
+    echo "Please choose a different installation directory."
+    exit 1
+  fi
+fi
 
 # Update and install necessary packages
 echo "Updating package list and upgrading system..."
@@ -58,6 +102,11 @@ sudo a2enmod rewrite headers env dir mime ssl
 sudo systemctl restart apache2
 
 # Secure MariaDB installation
+if ! mysqladmin ping -h localhost >/dev/null 2>&1; then
+  echo "Starting MariaDB..."
+  sudo systemctl start mariadb
+fi
+
 echo "Securing MariaDB..."
 sudo mysql_secure_installation <<EOF
 
@@ -83,11 +132,7 @@ EOF
 echo "Downloading Nextcloud..."
 sudo wget -O /tmp/nextcloud.zip https://download.nextcloud.com/server/releases/latest.zip
 sudo unzip -qo /tmp/nextcloud.zip -d /tmp/
-if [ "$NEXTCLOUD_DIR" != "/tmp/nextcloud" ]; then
-  sudo mv /tmp/nextcloud $NEXTCLOUD_DIR
-else
-  echo "Skipping move as source and destination are the same."
-fi
+sudo mv /tmp/nextcloud $NEXTCLOUD_DIR
 
 # Set permissions
 echo "Setting permissions..."
