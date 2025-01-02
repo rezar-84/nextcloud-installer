@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Nextcloud installation script for Ubuntu
+# Nextcloud and LAMP stack installation script for Ubuntu
 #
 
 ###############################################################################
@@ -106,78 +106,80 @@ prompt_variable() {
 }
 
 ###############################################################################
+# Prerequisites Installation
+###############################################################################
+install_prerequisites() {
+  echo "Updating system packages..."
+  apt update && apt upgrade -y
+
+  echo "Installing LAMP stack and required PHP modules..."
+  apt install -y apache2 mariadb-server wget unzip curl
+
+  # Allow user to choose PHP version
+  echo "Available PHP versions:"
+  apt-cache search php | grep -Eo '^php[0-9]+\.[0-9]+'
+  read -p "Enter PHP version to install (e.g., php8.1): " php_version
+
+  apt install -y $php_version libapache2-mod-$php_version \
+    ${php_version}-gd ${php_version}-mysql ${php_version}-curl ${php_version}-mbstring \
+    ${php_version}-intl ${php_version}-xml ${php_version}-zip ${php_version}-bz2 \
+    ${php_version}-imagick ${php_version}-gmp php-redis
+
+  echo "Enabling Apache modules..."
+  a2enmod rewrite headers env dir mime ssl
+  systemctl restart apache2
+
+  echo "LAMP stack and prerequisites installed."
+}
+
+###############################################################################
 # Main script
 ###############################################################################
+install_nextcloud() {
+  # Prompt the user for all required variables
+  prompt_variable DB_PASS        "Enter the **MariaDB root password**"    "root_password"  validate_password
+  prompt_variable NEXTCLOUD_DIR  "Enter the directory to install Nextcloud" "/var/www/nextcloud" validate_directory_path
+  prompt_variable DB_NAME        "Enter the database name for Nextcloud"    "nextcloud_db"   validate_mysql_identifier
+  prompt_variable DB_USER        "Enter the database user for Nextcloud"    "nextcloud_user" validate_mysql_identifier
+  prompt_variable ADMIN_USER     "Enter the Nextcloud admin username"       "admin"          validate_mysql_identifier
+  prompt_variable ADMIN_PASS     "Enter the Nextcloud admin password"       "admin_password" validate_password
+  prompt_variable DOMAIN         "Enter the domain for Nextcloud"           "example.com"    validate_domain
 
-# 1. Ensure we have sudo/root privileges
-if [[ $EUID -ne 0 ]]; then
-  echo "[ERROR] This script must be run with sudo or as root."
-  echo "Please re-run: sudo $0"
-  exit 1
-fi
+  echo
+  echo "======================="
+  echo " Summary of Parameters "
+  echo "======================="
+  echo "Nextcloud directory:  $NEXTCLOUD_DIR"
+  echo "Database name:        $DB_NAME"
+  echo "Database user:        $DB_USER"
+  echo "DB root password:     [hidden]"
+  echo "Nextcloud admin user: $ADMIN_USER"
+  echo "Admin password:       [hidden]"
+  echo "Domain:               $DOMAIN"
+  echo
 
-# 2. Prompt the user for all required variables
-#    - Order is important. We need the DB root password before checking databases.
-prompt_variable DB_PASS        "Enter the **MariaDB root password**"    "root_password"  validate_password
-prompt_variable NEXTCLOUD_DIR  "Enter the directory to install Nextcloud" "/var/www/nextcloud" validate_directory_path
-prompt_variable DB_NAME        "Enter the database name for Nextcloud"    "nextcloud_db"   validate_mysql_identifier
-prompt_variable DB_USER        "Enter the database user for Nextcloud"    "nextcloud_user" validate_mysql_identifier
-prompt_variable ADMIN_USER     "Enter the Nextcloud admin username"       "admin"          validate_mysql_identifier
-prompt_variable ADMIN_PASS     "Enter the Nextcloud admin password"       "admin_password" validate_password
-prompt_variable DOMAIN         "Enter the domain for Nextcloud"           "example.com"    validate_domain
-
-echo
-echo "======================="
-echo " Summary of Parameters "
-echo "======================="
-echo "Nextcloud directory:  $NEXTCLOUD_DIR"
-echo "Database name:        $DB_NAME"
-echo "Database user:        $DB_USER"
-echo "DB root password:     [hidden]"
-echo "Nextcloud admin user: $ADMIN_USER"
-echo "Admin password:       [hidden]"
-echo "Domain:               $DOMAIN"
-echo
-
-# 3. Check if the Nextcloud directory already exists
-if [ -d "$NEXTCLOUD_DIR" ]; then
-  echo "Directory '$NEXTCLOUD_DIR' already exists. Do you want to remove it? (yes/no)"
-  read -r remove_dir
-  if [ "$remove_dir" = "yes" ]; then
-    rm -rf "$NEXTCLOUD_DIR"
-    echo "Removed existing Nextcloud directory."
-  else
-    echo "Please choose a different installation directory or remove it manually."
-    exit 1
+  # Check if the Nextcloud directory already exists
+  if [ -d "$NEXTCLOUD_DIR" ]; then
+    echo "Directory '$NEXTCLOUD_DIR' already exists. Do you want to remove it? (yes/no)"
+    read -r remove_dir
+    if [ "$remove_dir" = "yes" ]; then
+      rm -rf "$NEXTCLOUD_DIR"
+      echo "Removed existing Nextcloud directory."
+    else
+      echo "Please choose a different installation directory or remove it manually."
+      exit 1
+    fi
   fi
-fi
 
-# 4. Update system and install required packages
-echo
-echo "[1/7] Updating system packages..."
-apt update && apt upgrade -y
+  # Secure MariaDB installation (only if not yet secure)
+  echo "Checking MariaDB status..."
+  if ! mysqladmin ping -h localhost >/dev/null 2>&1; then
+    echo "Starting MariaDB..."
+    systemctl start mariadb
+  fi
 
-echo
-echo "[2/7] Installing dependencies..."
-apt install -y apache2 mariadb-server libapache2-mod-php \
-  php-gd php-mysql php-curl php-mbstring php-intl php-xml php-zip \
-  php-bz2 php-imagick php-gmp wget unzip curl certbot python3-certbot-apache
-
-# Enable required Apache modules
-a2enmod rewrite headers env dir mime ssl
-systemctl restart apache2
-
-# 5. Secure MariaDB installation (only if not yet secure)
-echo
-echo "[3/7] Checking MariaDB status..."
-if ! mysqladmin ping -h localhost >/dev/null 2>&1; then
-  echo "Starting MariaDB..."
-  systemctl start mariadb
-fi
-
-echo
-echo "[4/7] Securing MariaDB..."
-mysql_secure_installation <<EOF
+  echo "Securing MariaDB..."
+  mysql_secure_installation <<EOF
 
 Y
 $DB_PASS
@@ -188,54 +190,50 @@ Y
 Y
 EOF
 
-# 6. Create or verify Nextcloud database and user
-echo
-echo "[5/7] Setting up Nextcloud database..."
-# Check if DB exists
-if mysql -u root -p"$DB_PASS" -e "USE $DB_NAME" 2>/dev/null; then
-  echo "Database '$DB_NAME' already exists."
-  echo "Would you like to (yes) use it, (reset) drop and re-create it, or (no) pick another name?"
-  read -r choice
-  case "$choice" in
-    yes)
-      echo "Using the existing database '$DB_NAME'."
-      ;;
-    reset)
-      echo "Dropping and re-creating the database '$DB_NAME'..."
-      mysql -u root -p"$DB_PASS" -e "DROP DATABASE $DB_NAME; CREATE DATABASE $DB_NAME;"
-      ;;
-    *)
-      echo "Please edit your DB_NAME variable or re-run the script with a different database name."
-      exit 1
-      ;;
-  esac
-else
-  echo "Creating database '$DB_NAME'..."
-  mysql -u root -p"$DB_PASS" -e "CREATE DATABASE $DB_NAME;"
-fi
+  # Create or verify Nextcloud database and user
+  echo "Setting up Nextcloud database..."
+  if mysql -u root -p"$DB_PASS" -e "USE $DB_NAME" 2>/dev/null; then
+    echo "Database '$DB_NAME' already exists."
+    echo "Would you like to (yes) use it, (reset) drop and re-create it, or (no) pick another name?"
+    read -r choice
+    case "$choice" in
+      yes)
+        echo "Using the existing database '$DB_NAME'."
+        ;;
+      reset)
+        echo "Dropping and re-creating the database '$DB_NAME'..."
+        mysql -u root -p"$DB_PASS" -e "DROP DATABASE $DB_NAME; CREATE DATABASE $DB_NAME;"
+        ;;
+      *)
+        echo "Please edit your DB_NAME variable or re-run the script with a different database name."
+        exit 1
+        ;;
+    esac
+  else
+    echo "Creating database '$DB_NAME'..."
+    mysql -u root -p"$DB_PASS" -e "CREATE DATABASE $DB_NAME;"
+  fi
 
-echo "Configuring user '$DB_USER'..."
-mysql -u root -p"$DB_PASS" <<EOF
+  echo "Configuring user '$DB_USER'..."
+  mysql -u root -p"$DB_PASS" <<EOF
 CREATE USER IF NOT EXISTS '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASS';
 GRANT ALL PRIVILEGES ON $DB_NAME.* TO '$DB_USER'@'localhost';
 FLUSH PRIVILEGES;
 EOF
 
-# 7. Download and install Nextcloud
-echo
-echo "[6/7] Downloading and installing Nextcloud..."
-wget -O /tmp/nextcloud.zip https://download.nextcloud.com/server/releases/latest.zip
-unzip -qo /tmp/nextcloud.zip -d /tmp/
-mv /tmp/nextcloud "$NEXTCLOUD_DIR"
+  # Download and install Nextcloud
+  echo "Downloading and installing Nextcloud..."
+  wget -O /tmp/nextcloud.zip https://download.nextcloud.com/server/releases/latest.zip
+  unzip -qo /tmp/nextcloud.zip -d /tmp/
+  mv /tmp/nextcloud "$NEXTCLOUD_DIR"
 
-# Set permissions
-chown -R www-data:www-data "$NEXTCLOUD_DIR"
-chmod -R 750 "$NEXTCLOUD_DIR"
+  # Set permissions
+  chown -R www-data:www-data "$NEXTCLOUD_DIR"
+  chmod -R 750 "$NEXTCLOUD_DIR"
 
-# 8. Configure Apache
-echo
-echo "Configuring Apache for Nextcloud..."
-cat <<EOL > /etc/apache2/sites-available/nextcloud.conf
+  # Configure Apache
+  echo "Configuring Apache for Nextcloud..."
+  cat <<EOL > /etc/apache2/sites-available/nextcloud.conf
 <VirtualHost *:80>
     ServerName $DOMAIN
     DocumentRoot $NEXTCLOUD_DIR
@@ -246,43 +244,48 @@ cat <<EOL > /etc/apache2/sites-available/nextcloud.conf
         Options FollowSymLinks MultiViews
     </Directory>
 
+    <IfModule mod_headers.c>
+        Header always set Strict-Transport-Security "max-age=15552000; includeSubDomains"
+    </IfModule>
+
     ErrorLog \${APACHE_LOG_DIR}/nextcloud_error.log
     CustomLog \${APACHE_LOG_DIR}/nextcloud_access.log combined
 </VirtualHost>
 EOL
 
-a2ensite nextcloud.conf
-systemctl reload apache2
+  a2ensite nextcloud.conf
+  systemctl reload apache2
 
-# Obtain SSL certificate
-echo
-echo "[7/7] Obtaining SSL certificate via Certbot..."
-certbot --apache -d "$DOMAIN" --non-interactive --agree-tos -m "admin@$DOMAIN"
+  # Obtain SSL certificate
+  echo "Obtaining SSL certificate via Certbot..."
+  certbot --apache -d "$DOMAIN" --non-interactive --agree-tos -m "admin@$DOMAIN"
 
-# 9. Autoconfig
-echo
-echo "Configuring Nextcloud autoconfig..."
-mkdir -p "$NEXTCLOUD_DIR/config"
-cat <<EOL > "$NEXTCLOUD_DIR/config/autoconfig.php"
-<?php
-\$AUTOCONFIG = [
-    'dbtype'     => 'mysql',
-    'dbname'     => '$DB_NAME',
-    'dbuser'     => '$DB_USER',
-    'dbpass'     => '$DB_PASS',
-    'dbhost'     => 'localhost',
-    'adminlogin' => '$ADMIN_USER',
-    'adminpass'  => '$ADMIN_PASS',
-    'directory'  => '$NEXTCLOUD_DIR/data',
-];
-EOL
+  echo "Nextcloud installation completed!"
+}
 
-systemctl restart apache2
+###############################################################################
+# Main Menu
+###############################################################################
+echo "Choose an option:"
+echo "1) Install LAMP stack and prerequisites"
+echo "2) Install Nextcloud"
+echo "3) Exit"
+read -p "Enter your choice: " choice
 
-echo
-echo "==========================================="
-echo " Nextcloud installation completed!"
-echo "==========================================="
-echo "Visit https://$DOMAIN (or http://$DOMAIN) to finalize your Nextcloud setup."
-echo
+case "$choice" in
+  1)
+    install_prerequisites
+    ;;
+  2)
+    install_nextcloud
+    ;;
+  3)
+    echo "Exiting..."
+    exit 0
+    ;;
+  *)
+    echo "Invalid choice. Exiting..."
+    exit 1
+    ;;
+esac
 
